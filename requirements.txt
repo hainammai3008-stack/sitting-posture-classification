@@ -1,0 +1,7 @@
+streamlit>=1.38
+streamlit-webrtc>=0.47
+tensorflow>=2.15,<2.19
+opencv-python-headless>=4.8
+numpy>=1.24
+av>=12
+Pillow>=10
