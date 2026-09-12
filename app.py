@@ -19,7 +19,7 @@ st.set_page_config(
     layout="wide",
 )
 
-MODEL_PATH = "model/image_classifier_v1.keras"
+MODEL_PATH = "model/posture_model.keras"
 
 # Phải đúng thứ tự class từ notebook Colab.
 # Notebook dùng full_ds.class_names.
