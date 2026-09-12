@@ -11,7 +11,7 @@ from PIL import Image
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
 
 # =========================================================
-# CẤU HÌNH APP
+# CẤU HÌNH
 # =========================================================
 st.set_page_config(
     page_title="AI Nhắc Tư Thế Ngồi",
@@ -19,9 +19,10 @@ st.set_page_config(
     layout="wide",
 )
 
-MODEL_PATH = "model/posture_model.keras"
+MODEL_PATH = "model/image_classifier_v1.keras"
 
-# PHẢI đúng thứ tự class lúc train trên Colab
+# Phải đúng thứ tự class từ notebook Colab.
+# Notebook dùng full_ds.class_names.
 CLASS_NAMES = [
     "leaning_backward",
     "leaning_left",
@@ -31,11 +32,8 @@ CLASS_NAMES = [
 
 CORRECT_CLASS = "upright"
 
+# Notebook Colab train với IMG_SIZE = (224, 224)
 IMAGE_SIZE = (224, 224)
-
-# Nếu lúc train dùng image / 255.0 -> "0_1"
-# Nếu lúc train dùng MobileNetV2 preprocess_input -> "mobilenet"
-PREPROCESS_MODE = "mobilenet"
 
 MIN_CONFIDENCE = 0.65
 BAD_POSTURE_SECONDS = 10.0
@@ -58,6 +56,7 @@ MESSAGES = {
     "unknown": "Chưa xác định rõ tư thế.",
 }
 
+
 # =========================================================
 # LOAD MODEL
 # =========================================================
@@ -73,24 +72,34 @@ except Exception as e:
     model_ok = False
     model_error = str(e)
 
+
 # =========================================================
-# XỬ LÝ ẢNH / INFERENCE
+# PREPROCESS — KHỚP NOTEBOOK COLAB
 # =========================================================
-def preprocess_frame(frame_bgr):
-    img = cv2.resize(frame_bgr, IMAGE_SIZE)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+def prepare_rgb_for_model(rgb_image):
+    """
+    Notebook Colab:
+      1. resize 224x224
+      2. giữ RGB
+      3. img_to_array -> pixel vẫn ở 0..255
+      4. expand_dims
+      5. model.predict(batch)
+
+    QUAN TRỌNG:
+    preprocess_input() đã nằm BÊN TRONG model:
+      x = tf.keras.applications.mobilenet_v2.preprocess_input(inputs)
+
+    Vì vậy app KHÔNG gọi preprocess_input() thêm lần nữa
+    và KHÔNG chia 255.
+    """
+    img = cv2.resize(rgb_image, IMAGE_SIZE)
     img = img.astype(np.float32)
-
-    if PREPROCESS_MODE == "mobilenet":
-        img = tf.keras.applications.mobilenet_v2.preprocess_input(img)
-    else:
-        img = img / 255.0
-
     return np.expand_dims(img, axis=0)
 
-def predict_posture(frame_bgr):
-    x = preprocess_frame(frame_bgr)
-    pred = model.predict(x, verbose=0)[0]
+
+def predict_rgb(rgb_image):
+    batch = prepare_rgb_for_model(rgb_image)
+    pred = model.predict(batch, verbose=0)[0]
 
     class_id = int(np.argmax(pred))
     confidence = float(pred[class_id])
@@ -110,20 +119,32 @@ def predict_posture(frame_bgr):
 
     return label, confidence, probabilities
 
+
+def predict_bgr(frame_bgr):
+    """
+    Camera/OpenCV đưa frame dạng BGR.
+    Notebook train từ loader ảnh TensorFlow theo RGB.
+    Vì vậy phải đổi BGR -> RGB đúng 1 lần.
+    """
+    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    return predict_rgb(frame_rgb)
+
+
 def majority_vote(history):
     valid = [x for x in history if x != "unknown"]
     if not valid:
         return "unknown"
     return max(set(valid), key=valid.count)
 
-def result_box(label, confidence):
+
+def show_result(label, confidence):
     if label == CORRECT_CLASS:
         st.success(
             f"✅ **{DISPLAY_NAMES[label]}** — độ tin cậy: {confidence * 100:.1f}%"
         )
     elif label == "unknown":
         st.warning(
-            f"⚠️ **Chưa xác định rõ tư thế** — độ tin cậy: {confidence * 100:.1f}%"
+            f"⚠️ **Chưa xác định rõ tư thế** — độ tin cậy cao nhất: {confidence * 100:.1f}%"
         )
     else:
         st.error(
@@ -131,8 +152,9 @@ def result_box(label, confidence):
             f"{MESSAGES.get(label, 'Hãy điều chỉnh lại tư thế ngồi.')}"
         )
 
+
 # =========================================================
-# VIDEO PROCESSOR CHO CAMERA
+# CAMERA REALTIME
 # =========================================================
 class PostureVideoProcessor(VideoProcessorBase):
     def __init__(self):
@@ -147,12 +169,13 @@ class PostureVideoProcessor(VideoProcessorBase):
         self.should_alert = False
 
     def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
+        frame_bgr = frame.to_ndarray(format="bgr24")
 
         if model is None:
-            return av.VideoFrame.from_ndarray(img, format="bgr24")
+            return av.VideoFrame.from_ndarray(frame_bgr, format="bgr24")
 
-        raw_label, confidence, _ = predict_posture(img)
+        raw_label, confidence, _ = predict_bgr(frame_bgr)
+
         self.history.append(raw_label)
         stable_label = majority_vote(list(self.history))
 
@@ -182,6 +205,7 @@ class PostureVideoProcessor(VideoProcessorBase):
         self.current_label = stable_label
         self.current_confidence = confidence
 
+        # Chỉ hiển thị chữ lên frame; ảnh predict đã được xử lý trước đó.
         if stable_label == CORRECT_CLASS:
             color = (0, 200, 0)
         elif stable_label == "unknown":
@@ -190,7 +214,7 @@ class PostureVideoProcessor(VideoProcessorBase):
             color = (0, 0, 255)
 
         cv2.putText(
-            img,
+            frame_bgr,
             f"Posture: {DISPLAY_NAMES.get(stable_label, stable_label)}",
             (20, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
@@ -200,7 +224,7 @@ class PostureVideoProcessor(VideoProcessorBase):
         )
 
         cv2.putText(
-            img,
+            frame_bgr,
             f"Confidence: {confidence * 100:.1f}%",
             (20, 75),
             cv2.FONT_HERSHEY_SIMPLEX,
@@ -212,7 +236,7 @@ class PostureVideoProcessor(VideoProcessorBase):
         if stable_label not in (CORRECT_CLASS, "unknown"):
             remaining = max(0.0, BAD_POSTURE_SECONDS - self.bad_seconds)
             cv2.putText(
-                img,
+                frame_bgr,
                 f"Alert after: {remaining:.1f}s",
                 (20, 110),
                 cv2.FONT_HERSHEY_SIMPLEX,
@@ -221,10 +245,11 @@ class PostureVideoProcessor(VideoProcessorBase):
                 2,
             )
 
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
+        return av.VideoFrame.from_ndarray(frame_bgr, format="bgr24")
+
 
 # =========================================================
-# HEADER
+# GIAO DIỆN
 # =========================================================
 st.title("🪑 AI Nhắc Tư Thế Ngồi")
 st.caption(
@@ -233,22 +258,20 @@ st.caption(
 
 if not model_ok:
     st.error(
-        "Không load được model. Hãy copy file `posture_model.keras` vào "
-        "`model/posture_model.keras`."
+        "Không load được model. Hãy đặt file model tại "
+        "`model/image_classifier_v1.keras`."
     )
     st.code(model_error)
     st.stop()
 
-# =========================================================
-# 2 TÍNH NĂNG CHÍNH
-# =========================================================
 tab_camera, tab_upload = st.tabs([
     "📷 Camera realtime",
     "🖼️ Upload ảnh",
 ])
 
+
 # ---------------------------------------------------------
-# TAB 1: CAMERA REALTIME
+# TAB 1 — CAMERA
 # ---------------------------------------------------------
 with tab_camera:
     st.subheader("1. Phát hiện tư thế bằng camera")
@@ -345,8 +368,9 @@ with tab_camera:
 
             time.sleep(0.5)
 
+
 # ---------------------------------------------------------
-# TAB 2: UPLOAD ẢNH
+# TAB 2 — UPLOAD ẢNH
 # ---------------------------------------------------------
 with tab_upload:
     st.subheader("2. Kiểm tra tư thế từ ảnh")
@@ -362,7 +386,9 @@ with tab_upload:
     )
 
     if uploaded_file is not None:
+        # PIL convert RGB giống với tf.keras.utils.load_img trong notebook
         image = Image.open(uploaded_file).convert("RGB")
+        image_np_rgb = np.array(image)
 
         col_img, col_result = st.columns([1.2, 1])
 
@@ -373,15 +399,13 @@ with tab_upload:
                 use_container_width=True
             )
 
-        # PIL RGB -> numpy RGB -> OpenCV BGR
-        image_np = np.array(image)
-        frame_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-
-        label, confidence, probabilities = predict_posture(frame_bgr)
+        # Không RGB -> BGR -> RGB lòng vòng.
+        # Predict trực tiếp trên RGB giống notebook Colab.
+        label, confidence, probabilities = predict_rgb(image_np_rgb)
 
         with col_result:
             st.markdown("### Kết quả AI")
-            result_box(label, confidence)
+            show_result(label, confidence)
 
             st.markdown("#### Xác suất theo từng lớp")
 
@@ -397,13 +421,9 @@ with tab_upload:
                 st.progress(min(max(prob, 0.0), 1.0))
                 st.caption(f"{prob * 100:.1f}%")
 
-            if label != "unknown":
-                st.info(
-                    "Đây là kết quả dự đoán của mô hình AI, "
-                    "không phải chẩn đoán y tế."
-                )
+            st.info(
+                "Kết quả là dự đoán của mô hình AI và không phải chẩn đoán y tế."
+            )
 
 st.markdown("---")
-st.caption(
-    "TMA2-AI Team — Demo AI Sitting Posture Classification"
-)
+st.caption("TMA2-AI Team — Demo AI Sitting Posture Classification")

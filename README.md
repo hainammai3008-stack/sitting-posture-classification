@@ -1,122 +1,78 @@
 
-# AI Sitting Posture Monitor - Streamlit
+# Posture Streamlit Demo — bản sửa theo notebook Colab
 
-Demo có **2 tính năng chính**:
+Bản này đã chỉnh phần inference để khớp chính xác với notebook
+`TMA2_HND_Sitting_Posture_Classification(1).ipynb`.
 
-1. Camera realtime
-2. Upload ảnh để phân loại tư thế
+## Điểm sửa quan trọng
 
-## Cấu trúc
+Notebook xây model:
+
+```python
+inputs = keras.Input(shape=(224, 224, 3))
+x = tf.keras.applications.mobilenet_v2.preprocess_input(inputs)
+x = base_model(x, training=False)
+...
+model = keras.Model(inputs, outputs)
+```
+
+Do đó `preprocess_input()` đã nằm **bên trong file model `.keras`**.
+
+Notebook khi predict chỉ làm:
+
+```python
+img = tf.keras.utils.load_img(image_filename, target_size=(224, 224))
+img_array = tf.keras.utils.img_to_array(img)
+batch = tf.expand_dims(img_array, axis=0)
+pred = model.predict(batch)
+```
+
+Vì vậy app này:
+
+- KHÔNG gọi `mobilenet_v2.preprocess_input()` bên ngoài model.
+- KHÔNG chia pixel cho 255.
+- Upload ảnh dùng RGB trực tiếp.
+- Camera OpenCV chỉ đổi `BGR -> RGB` một lần.
+- Resize đúng `224 x 224`.
+
+## Model
+
+Copy model Colab:
 
 ```text
-posture_streamlit_2features/
-├── app.py
-├── requirements.txt
-├── README.md
-└── model/
-    └── posture_model.keras
+model/image_classifier_v1.keras
 ```
 
-## 1. Copy model từ Colab
-
-Sau khi train:
-
-```python
-model.save("posture_model.keras")
-```
-
-Đặt file vào:
-
-```text
-model/posture_model.keras
-```
-
-## 2. Kiểm tra CLASS_NAMES
-
-Trên Colab:
-
-```python
-print(train_ds.class_names)
-```
-
-Copy đúng thứ tự sang `CLASS_NAMES` trong `app.py`.
-
-Bản hiện tại đang để:
-
-```python
-CLASS_NAMES = [
-    "leaning_backward",
-    "leaning_left",
-    "leaning_right",
-    "upright",
-]
-```
-
-## 3. Kiểm tra preprocessing
-
-Nếu notebook train MobileNetV2 bằng:
-
-```python
-tf.keras.applications.mobilenet_v2.preprocess_input
-```
-
-giữ:
-
-```python
-PREPROCESS_MODE = "mobilenet"
-```
-
-Nếu train bằng:
-
-```python
-image / 255.0
-```
-
-đổi thành:
-
-```python
-PREPROCESS_MODE = "0_1"
-```
-
-## 4. Chạy local
+## Chạy
 
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Sau đó mở:
+## Kiểm tra class order
 
-```text
-http://localhost:8501
+Notebook lấy:
+
+```python
+class_names = full_ds.class_names
 ```
 
-## 5. Tính năng Camera
+Nếu cần xác nhận, in trên Colab:
 
-- Dùng `streamlit-webrtc`.
-- AI dự đoán liên tục.
-- Làm mượt qua 8 frame.
-- Nếu sai tư thế liên tục 10 giây:
-  - hiển thị cảnh báo
-  - browser phát giọng nói tiếng Việt.
-- Sau một lần cảnh báo, đợi 15 giây mới cảnh báo lại.
+```python
+print(class_names)
+```
 
-## 6. Tính năng Upload ảnh
+và sửa `CLASS_NAMES` trong `app.py` đúng thứ tự.
 
-- Chấp nhận JPG/JPEG/PNG.
-- Resize về 224x224.
-- Chạy cùng model với camera.
-- Hiển thị:
-  - nhãn dự đoán
-  - confidence
-  - xác suất của từng class.
+## Test đối chiếu rất nên làm
 
-## 7. Deploy Streamlit Community Cloud
+Dùng cùng một file ảnh:
 
-Push project lên GitHub, sau đó:
+1. predict trong notebook Colab;
+2. upload chính ảnh đó lên Streamlit.
 
-- chọn repository
-- main file: `app.py`
-- deploy
+Class và confidence phải gần như giống nhau.
 
-Khi deploy Internet, camera cần HTTPS. Streamlit Community Cloud đã cung cấp HTTPS.
+Nếu upload ảnh khớp Colab nhưng camera thật vẫn kém, nguyên nhân chính nhiều khả năng là domain shift giữa dữ liệu Roboflow và webcam thật.
